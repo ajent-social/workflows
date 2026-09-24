@@ -1,4 +1,4 @@
-# delivery.go-validation — credential-free Go vet/test for PostgreSQL-compatible callers.
+# delivery.go-validation — credential-free Go vet/test.
 # Capability: delivery.go-validation. Status: CANDIDATE.
 #
 # Callers retain events, required-check names and product-specific gates.
