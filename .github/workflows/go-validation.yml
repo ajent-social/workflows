@@ -1,0 +1,149 @@
+# delivery.go-validation — credential-free Go vet/test for PostgreSQL-compatible callers.
+# Capability: delivery.go-validation. Status: CANDIDATE.
+#
+# Callers retain events, required-check names and product-specific gates.
+# No arbitrary shell hooks. No secrets. Read-only contents by default.
+name: go-validation
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Module directory containing go.mod
+        type: string
+        default: "."
+      go-version-file:
+        description: Path to go.mod or go.work relative to the repository root
+        type: string
+        default: "go.mod"
+      packages:
+        description: Package pattern passed to go vet and go test
+        type: string
+        default: "./..."
+      race:
+        description: Run tests under the race detector
+        type: boolean
+        default: true
+      timeout-minutes:
+        description: Job timeout
+        type: number
+        default: 15
+      enable-postgres:
+        description: Start a Postgres 16 service and export AMSL_SQLSTORE_TEST_DSN
+        type: boolean
+        default: false
+      postgres-db:
+        description: Database name when enable-postgres is true
+        type: string
+        default: "amsl_servicecred_test"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: ${{ !inputs.enable-postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: validate inputs
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          case "$PACKAGES" in
+            ""|*[!A-Za-z0-9_./\*-]*)
+              echo "packages must be a simple Go pattern (e.g. ./...)"
+              exit 1
+              ;;
+          esac
+          case "$WORKDIR" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "working-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+      - name: go vet
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: go vet -- ${PACKAGES}
+      - name: go test
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          RACE: ${{ inputs.race }}
+        run: |
+          if [ "$RACE" = "true" ]; then
+            go test -race -- ${PACKAGES}
+          else
+            go test -- ${PACKAGES}
+          fi
+
+  validate-with-postgres:
+    if: ${{ inputs.enable-postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ${{ inputs.postgres-db }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AMSL_SQLSTORE_TEST_DSN: host=127.0.0.1 user=postgres password=postgres dbname=${{ inputs.postgres-db }} sslmode=disable
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: validate inputs
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          case "$PACKAGES" in
+            ""|*[!A-Za-z0-9_./\*-]*)
+              echo "packages must be a simple Go pattern (e.g. ./...)"
+              exit 1
+              ;;
+          esac
+          case "$WORKDIR" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "working-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+      - name: go vet
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: go vet -- ${PACKAGES}
+      - name: go test
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          RACE: ${{ inputs.race }}
+        run: |
+          if [ "$RACE" = "true" ]; then
+            go test -race -- ${PACKAGES}
+          else
+            go test -- ${PACKAGES}
+          fi
