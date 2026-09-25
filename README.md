@@ -2,13 +2,14 @@
 
 Carry operational fixes forward with the workflow that needs them.
 
-**Status: CANDIDATE reusable workflows for Go validation, Go release
+**Status: CANDIDATE reusable workflows for Go validation, Go lint, Go release
 verification, container artifacts, and infrastructure preview.** This repository
 defines:
 
 | Contract | Workflow |
 | --- | --- |
 | [Go validation](contracts/go-validation.md) | [go-validation.yml](.github/workflows/go-validation.yml) |
+| [Go lint](contracts/go-lint.md) | [go-lint.yml](.github/workflows/go-lint.yml) |
 | [Go release](contracts/go-release.md) | [go-release.yml](.github/workflows/go-release.yml) |
 | [Container artifact](contracts/container-artifact.md) | [container-artifact.yml](.github/workflows/container-artifact.yml) |
 | [Infrastructure preview](contracts/infrastructure-preview.md) | [infrastructure-preview.yml](.github/workflows/infrastructure-preview.yml) |
