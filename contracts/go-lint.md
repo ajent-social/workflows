@@ -47,8 +47,3 @@ Failed lint must fail the called job. Two real modules must adopt without
 dropping existing required checks. Documentation CI alone is not consumer
 verification. No real consumer adoption is recorded yet.
 
-## Census evidence (2026-09-25)
-
-Across admin-owned orgs, active repos in the last 18 months showed
-`golangci-lint` in **14** workflow files spanning serenity, sire, gist, saka,
-mint, blink, wolf, zatiti, ajent, dira, shiftmesh, and others.
