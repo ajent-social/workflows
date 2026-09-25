@@ -1,0 +1,78 @@
+# delivery.go-lint — credential-free golangci-lint.
+# Capability: delivery.go-lint. Status: CANDIDATE.
+#
+# Callers retain events, required-check names and product-specific config
+# (.golangci.yml). No arbitrary shell hooks. No secrets. Read-only contents.
+name: go-lint
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Module directory containing go.mod (and usually .golangci.yml)
+        type: string
+        default: "."
+      go-version-file:
+        description: Path to go.mod or go.work relative to the repository root
+        type: string
+        default: "go.mod"
+      golangci-lint-version:
+        description: golangci-lint release tag (e.g. v2.11)
+        type: string
+        default: "v2.11"
+      args:
+        description: Extra args passed to golangci-lint run (simple tokens only)
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Job timeout
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: validate inputs
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          LINTVER: ${{ inputs.golangci-lint-version }}
+          ARGS: ${{ inputs.args }}
+        run: |
+          case "$WORKDIR" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "working-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          case "$LINTVER" in
+            v[0-9]* ) ;;
+            *)
+              echo "golangci-lint-version must look like v2.11"
+              exit 1
+              ;;
+          esac
+          case "$ARGS" in
+            *[\!\$\`\;\&\|]*)
+              echo "args must not contain shell metacharacters"
+              exit 1
+              ;;
+          esac
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          working-directory: ${{ inputs.working-directory }}
+          args: ${{ inputs.args }}
+          install-mode: binary
