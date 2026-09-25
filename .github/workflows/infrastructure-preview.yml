@@ -1,0 +1,120 @@
+# delivery.infrastructure-preview — Pulumi preview with caller-scoped OIDC.
+# Capability: delivery.infrastructure-preview. Status: CANDIDATE.
+#
+# Preview executes caller code even with a read-oriented cloud role. Never apply.
+# Caller owns stack, backend, event trust, environment, and apply approval.
+name: infrastructure-preview
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Directory containing the Pulumi program
+        type: string
+        default: "."
+      stack-name:
+        description: Fully qualified Pulumi stack (org/project/stack or project/stack)
+        type: string
+        required: true
+      ref:
+        description: Git ref to check out (empty = caller SHA)
+        type: string
+        default: ""
+      cloud-region:
+        description: AWS region for configure-aws-credentials
+        type: string
+        default: "us-west-2"
+      timeout-minutes:
+        description: Job timeout
+        type: number
+        default: 30
+      go-version-file:
+        description: Optional go.mod for Go-based Pulumi programs
+        type: string
+        default: "go.mod"
+    secrets:
+      aws-role-arn:
+        description: IAM role ARN assumed via GitHub OIDC for preview
+        required: true
+      pulumi-access-token:
+        description: Pulumi Cloud access token (or caller backend equivalent)
+        required: true
+    outputs:
+      preview-outcome:
+        description: success or failure string from the preview step
+        value: ${{ jobs.preview.outputs.outcome }}
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      outcome: ${{ steps.record.outputs.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: validate inputs
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          STACK: ${{ inputs.stack-name }}
+          REGION: ${{ inputs.cloud-region }}
+        run: |
+          case "$WORKDIR" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "working-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          case "$STACK" in
+            ""|*[\!A-Za-z0-9_./-]*)
+              echo "stack-name must be a Pulumi stack identifier"
+              exit 1
+              ;;
+          esac
+          case "$REGION" in
+            ""|*[\!a-z0-9-]*)
+              echo "cloud-region must be an AWS region id"
+              exit 1
+              ;;
+          esac
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: configure aws (oidc)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd
+        with:
+          role-to-assume: ${{ secrets.aws-role-arn }}
+          aws-region: ${{ inputs.cloud-region }}
+          role-session-name: amsl-infrastructure-preview
+      - name: pulumi preview
+        id: run
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d
+        with:
+          command: preview
+          stack-name: ${{ inputs.stack-name }}
+          work-dir: ${{ inputs.working-directory }}
+          comment-on-pr: false
+          upsert: false
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+        continue-on-error: true
+      - name: record outcome
+        id: record
+        if: always()
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          echo "outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "preview failed; treat as blocking for callers that require a clean preview"
+            exit 1
+          fi
