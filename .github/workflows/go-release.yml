@@ -1,0 +1,190 @@
+# delivery.go-release — verify version stamp and expected release assets.
+# Capability: delivery.go-release. Status: CANDIDATE.
+#
+# Does not invent a version scheme or replace GoReleaser. Publication is an
+# optional second job that requires the caller to grant contents: write.
+# External registry/signing credentials remain caller-owned.
+name: go-release
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Module directory containing go.mod
+        type: string
+        default: "."
+      go-version-file:
+        description: Path to go.mod or go.work relative to the repository root
+        type: string
+        default: "go.mod"
+      ref:
+        description: Git ref to check out (empty = caller SHA)
+        type: string
+        default: ""
+      version:
+        description: Expected release version string (e.g. v1.2.3)
+        type: string
+        required: true
+      version-command:
+        description: Optional shell command that prints the native version stamp (cwd = working-directory). Empty skips stamp check.
+        type: string
+        default: ""
+      dist-directory:
+        description: Directory holding release assets relative to repository root
+        type: string
+        default: "dist"
+      expected-assets:
+        description: Newline-separated asset file names that must exist under dist-directory
+        type: string
+        required: true
+      timeout-minutes:
+        description: Job timeout
+        type: number
+        default: 20
+      publish:
+        description: "When true, create a GitHub Release from verified assets (requires contents: write)"
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: Verified version string
+        value: ${{ jobs.verify.outputs.version }}
+      assets-ok:
+        description: true when all expected assets were present and non-empty
+        value: ${{ jobs.verify.outputs.assets-ok }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      assets-ok: ${{ steps.check.outputs.assets-ok }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+          cache: false
+      - name: validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          DIST: ${{ inputs.dist-directory }}
+          WORKDIR: ${{ inputs.working-directory }}
+          ASSETS: ${{ inputs.expected-assets }}
+        run: |
+          case "$VERSION" in
+            ""|*[!A-Za-z0-9._+-]*|.*|*.)
+              echo "version must be a non-empty identifier (e.g. v1.2.3)"
+              exit 1
+              ;;
+          esac
+          case "$DIST" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "dist-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          case "$WORKDIR" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "working-directory must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          if [ -z "$ASSETS" ]; then
+            echo "expected-assets must list at least one file"
+            exit 1
+          fi
+      - name: verify version and assets
+        id: check
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          VERSION: ${{ inputs.version }}
+          DIST: ${{ inputs.dist-directory }}
+          ASSETS: ${{ inputs.expected-assets }}
+          VERSION_COMMAND: ${{ inputs.version-command }}
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE}"
+          DIST_PATH="${ROOT}/${DIST}"
+          if [ ! -d "$DIST_PATH" ]; then
+            echo "dist-directory missing: $DIST"
+            exit 1
+          fi
+          missing=0
+          while IFS= read -r asset; do
+            [ -z "$asset" ] && continue
+            case "$asset" in
+              *..*|*[\!\$\`\;\&\|/]*)
+                echo "asset name rejected: $asset"
+                exit 1
+                ;;
+            esac
+            f="${DIST_PATH}/${asset}"
+            if [ ! -s "$f" ]; then
+              echo "missing or empty asset: $asset"
+              missing=1
+            else
+              echo "ok asset: $asset ($(wc -c < "$f") bytes)"
+            fi
+          done <<EOF
+          $ASSETS
+          EOF
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          if [ -n "$VERSION_COMMAND" ]; then
+            stamp="$(bash -lc "$VERSION_COMMAND" | head -n 1 | tr -d '\r' || true)"
+            if [ -z "$stamp" ]; then
+              echo "version-command produced no stamp"
+              exit 1
+            fi
+            if ! printf '%s' "$stamp" | grep -F "$VERSION" >/dev/null; then
+              echo "version stamp mismatch: got ${stamp@Q}, want substring ${VERSION@Q}"
+              exit 1
+            fi
+            echo "version stamp ok: $stamp"
+          else
+            echo "version-command empty; checking assets for version=${VERSION} only"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "assets-ok=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: verify
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: true
+      - name: publish github release
+        env:
+          VERSION: ${{ inputs.version }}
+          DIST: ${{ inputs.dist-directory }}
+          ASSETS: ${{ inputs.expected-assets }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIST_PATH="${GITHUB_WORKSPACE}/${DIST}"
+          files=()
+          while IFS= read -r asset; do
+            [ -z "$asset" ] && continue
+            files+=("${DIST_PATH}/${asset}")
+          done <<EOF
+          $ASSETS
+          EOF
+          gh release create "$VERSION" "${files[@]}" \
+            --title "$VERSION" \
+            --notes "AMSL go-release verified assets for ${VERSION}." \
+            --target "${GITHUB_SHA}"

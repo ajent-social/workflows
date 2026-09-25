@@ -1,0 +1,198 @@
+# delivery.container-artifact — build platforms, scan, optional sign/push; emit digest.
+# Capability: delivery.container-artifact. Status: CANDIDATE.
+#
+# Publishing may precede caller promotion. A pushed digest is not approval.
+# Caller owns registry auth (OIDC or secrets), Dockerfile, and deploy policy.
+name: container-artifact
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: Build context path relative to repository root
+        type: string
+        default: "."
+      file:
+        description: Dockerfile path relative to repository root
+        type: string
+        default: "Dockerfile"
+      image:
+        description: Image name without tag/digest (e.g. ghcr.io/org/app)
+        type: string
+        required: true
+      platforms:
+        description: Comma-separated platforms for buildx
+        type: string
+        default: "linux/amd64"
+      ref:
+        description: Git ref to check out (empty = caller SHA)
+        type: string
+        default: ""
+      push:
+        description: Push the multi-platform image (still not promotion approval)
+        type: boolean
+        default: false
+      scan:
+        description: Run Trivy filesystem+image scan and fail on CRITICAL
+        type: boolean
+        default: true
+      sign:
+        description: "Cosign keyless sign after push (requires id-token: write and push)"
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: Job timeout
+        type: number
+        default: 45
+    secrets:
+      registry-username:
+        description: Optional registry username when not using GITHUB_TOKEN to ghcr.io
+        required: false
+      registry-password:
+        description: Optional registry password/token
+        required: false
+    outputs:
+      digest:
+        description: Image digest (sha256:…) when push=true; empty for local-only builds
+        value: ${{ jobs.build.outputs.digest }}
+      image:
+        description: Image reference without digest
+        value: ${{ jobs.build.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      digest: ${{ steps.meta.outputs.digest }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: validate inputs
+        env:
+          CONTEXT: ${{ inputs.context }}
+          FILE: ${{ inputs.file }}
+          IMAGE: ${{ inputs.image }}
+          PLATFORMS: ${{ inputs.platforms }}
+          PUSH: ${{ inputs.push }}
+          SIGN: ${{ inputs.sign }}
+        run: |
+          case "$CONTEXT" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "context must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          case "$FILE" in
+            ""|*..*|*[\!\$\`\;\&\|]*)
+              echo "file must be a relative path without metacharacters"
+              exit 1
+              ;;
+          esac
+          case "$IMAGE" in
+            ""|*[\!\$\`\;\&\|[:space:]]*|*:*)
+              echo "image must be a registry/name without tag or digest"
+              exit 1
+              ;;
+          esac
+          case "$PLATFORMS" in
+            ""|*[\!a-z0-9,_/]*)
+              echo "platforms must be a comma-separated linux/... list"
+              exit 1
+              ;;
+          esac
+          if [ "$SIGN" = "true" ] && [ "$PUSH" != "true" ]; then
+            echo "sign=true requires push=true"
+            exit 1
+          fi
+      - name: scan dockerfile context (fs)
+        if: ${{ inputs.scan }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.context }}
+          severity: CRITICAL
+          exit-code: "1"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - name: login registry
+        if: ${{ inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          USER: ${{ secrets.registry-username }}
+          PASS: ${{ secrets.registry-password }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registry="${IMAGE%%/*}"
+          if [ -n "${USER}" ] && [ -n "${PASS}" ]; then
+            printf '%s' "$PASS" | docker login "$registry" -u "$USER" --password-stdin
+          elif [ "$registry" = "ghcr.io" ]; then
+            printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          else
+            echo "push=true requires registry-username/password secrets (or ghcr.io with GITHUB_TOKEN)"
+            exit 1
+          fi
+      - name: build
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          load: ${{ inputs.push == false && !contains(inputs.platforms, ',') }}
+          tags: ${{ inputs.image }}:amsl-build
+          provenance: true
+          sbom: true
+      - name: scan built image
+        if: ${{ inputs.scan && inputs.push == false && !contains(inputs.platforms, ',') }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image }}:amsl-build
+          severity: CRITICAL
+          exit-code: "1"
+      - name: scan pushed image by digest
+        if: ${{ inputs.scan && inputs.push }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image }}@${{ steps.build.outputs.digest }}
+          severity: CRITICAL
+          exit-code: "1"
+      - name: record outputs
+        id: meta
+        env:
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PUSH: ${{ inputs.push }}
+        run: |
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          if [ "$PUSH" = "true" ] && [ -n "$DIGEST" ]; then
+            echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest=" >> "$GITHUB_OUTPUT"
+            echo "push=false or digest unavailable; consumers must not treat mutable tags as approval"
+          fi
+      - name: install cosign
+        if: ${{ inputs.sign && inputs.push }}
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      - name: cosign keyless sign
+        if: ${{ inputs.sign && inputs.push }}
+        env:
+          IMAGE: ${{ inputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE}@${DIGEST}"
