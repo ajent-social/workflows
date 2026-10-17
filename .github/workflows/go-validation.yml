@@ -59,7 +59,7 @@ jobs:
           WORKDIR: ${{ inputs.working-directory }}
         run: |
           case "$PACKAGES" in
-            ""|*[!A-Za-z0-9_./\*-]*)
+            ""|-*|*[!A-Za-z0-9_./\*-]*)
               echo "packages must be a simple Go pattern (e.g. ./...)"
               exit 1
               ;;
@@ -74,7 +74,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         env:
           PACKAGES: ${{ inputs.packages }}
-        run: go vet -- ${PACKAGES}
+        run: go vet -- "${PACKAGES}"
       - name: go test
         working-directory: ${{ inputs.working-directory }}
         env:
@@ -82,9 +82,9 @@ jobs:
           RACE: ${{ inputs.race }}
         run: |
           if [ "$RACE" = "true" ]; then
-            go test -race -- ${PACKAGES}
+            go test -race "${PACKAGES}"
           else
-            go test -- ${PACKAGES}
+            go test "${PACKAGES}"
           fi
 
   validate-with-postgres:
@@ -120,7 +120,7 @@ jobs:
           WORKDIR: ${{ inputs.working-directory }}
         run: |
           case "$PACKAGES" in
-            ""|*[!A-Za-z0-9_./\*-]*)
+            ""|-*|*[!A-Za-z0-9_./\*-]*)
               echo "packages must be a simple Go pattern (e.g. ./...)"
               exit 1
               ;;
@@ -135,7 +135,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         env:
           PACKAGES: ${{ inputs.packages }}
-        run: go vet -- ${PACKAGES}
+        run: go vet -- "${PACKAGES}"
       - name: go test
         working-directory: ${{ inputs.working-directory }}
         env:
@@ -143,7 +143,7 @@ jobs:
           RACE: ${{ inputs.race }}
         run: |
           if [ "$RACE" = "true" ]; then
-            go test -race -- ${PACKAGES}
+            go test -race "${PACKAGES}"
           else
-            go test -- ${PACKAGES}
+            go test "${PACKAGES}"
           fi
