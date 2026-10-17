@@ -47,6 +47,11 @@ or hosted GitHub Actions execution is established.
 
 Observed locally: original input guards fail the leading-dash regression;
 corrected input guards pass. Actionlint and local documentation links pass.
-The full actual-Go command matrix remains pending a bounded verification runner.
+A bounded Linux ARM64 runner with Go 1.27.1 exercised the actual workflow
+commands: all eight passing/failing combinations across both branches and race
+modes behaved as expected, and missing-package checks failed as required.
+The original workflow failed the same harness (12 failures); the corrected
+workflow passed both harness tests. This is command-level evidence, not a
+hosted workflow run.
 Human maintainer review and merge remain pending; no upstream maturity,
 consumer adoption, hosted CI or service qualification is claimed by this patch.
